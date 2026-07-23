@@ -1,0 +1,12 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Never commit uploaded purchase orders or generated customer output.
+po*_POR*.csv
+Converted_SalesOrder_*.csv
+
+# Streamlit secrets are local/deployment settings.
+.streamlit/secrets.toml
