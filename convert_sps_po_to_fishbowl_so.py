@@ -170,6 +170,33 @@ def load_template(path: Path) -> tuple[list[str], list[str]]:
     return so_header, item_header
 
 
+def load_part_descriptions(path: Path) -> dict[str, str]:
+    rows = read_csv_rows(path)
+    header_index, header = find_header_row(
+        rows, {"PartNumber", "PartDescription"}, "Fishbowl Part"
+    )
+    descriptions: dict[str, str] = {}
+    for position, row in enumerate(rows[header_index + 1 :], start=header_index + 2):
+        if not any(cell.strip() for cell in row):
+            continue
+        record = row_as_dict(header, row)
+        part_number = require(
+            record.get("PartNumber", ""), f"PartNumber on Part.csv line {position}"
+        )
+        description = require(
+            record.get("PartDescription", ""),
+            f"PartDescription for PartNumber {part_number}",
+        )
+        if part_number in descriptions:
+            raise ConversionError(
+                f"Duplicate PartNumber in Part.csv: {part_number}"
+            )
+        descriptions[part_number] = description
+    if not descriptions:
+        raise ConversionError("Part.csv contains no part records")
+    return descriptions
+
+
 def load_reference_defaults(
     path: Path, so_header: Sequence[str], item_header: Sequence[str]
 ) -> tuple[dict[str, str], dict[str, str], list[list[str]]]:
@@ -317,6 +344,7 @@ def build_output_rows(
     reference_so: dict[str, str],
     reference_item: dict[str, str],
     extra_so_defaults: dict[str, str] | None = None,
+    part_descriptions: dict[str, str] | None = None,
 ) -> list[list[str]]:
     so_values = dict(reference_so)
     so_values.update(SO_DEFAULTS)
@@ -340,6 +368,13 @@ def build_output_rows(
     # The import CSV itself must start with an SO data row, not column-name rows.
     rows = [select_fields(so_header, so_values)]
     for item in order.items:
+        description = item.description
+        if part_descriptions is not None:
+            if item.product_number not in part_descriptions:
+                raise ConversionError(
+                    f"ProductNumber {item.product_number} was not found in Part.csv"
+                )
+            description = part_descriptions[item.product_number]
         item_values = dict(reference_item)
         item_values.update(ITEM_DEFAULTS)
         item_values.update(
@@ -347,7 +382,7 @@ def build_output_rows(
                 "Flag": "Item",
                 "SONum": "",
                 "ProductNumber": item.product_number,
-                "ProductDescription": item.description,
+                "ProductDescription": description,
                 "ProductQuantity": decimal_text(item.quantity),
                 "UOM": item.uom,
                 "ProductPrice": decimal_text(item.unit_price),
@@ -428,6 +463,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--po", required=True, type=Path, help="SPS Commerce PO CSV")
     parser.add_argument("--template", required=True, type=Path, help="Fishbowl template CSV")
     parser.add_argument(
+        "--parts",
+        required=True,
+        type=Path,
+        help="Fishbowl Part.csv used for ProductDescription mapping",
+    )
+    parser.add_argument(
         "--reference",
         type=Path,
         help="Optional normal Fishbowl SO CSV used for additional defaults",
@@ -448,8 +489,14 @@ def main() -> int:
             reference_so, reference_item, reference_rows = {}, {}, []
         output_date_format = infer_date_format(reference_rows, so_header)
         order = parse_sps_order(args.po, output_date_format)
+        part_descriptions = load_part_descriptions(args.parts)
         output_rows = build_output_rows(
-            order, so_header, item_header, reference_so, reference_item
+            order,
+            so_header,
+            item_header,
+            reference_so,
+            reference_item,
+            part_descriptions=part_descriptions,
         )
         validate_output_rows(output_rows, so_header, item_header, len(order.items))
         write_csv(args.output, output_rows)
@@ -458,6 +505,10 @@ def main() -> int:
         written_rows = read_csv_rows(args.output)
         validate_output_rows(written_rows, so_header, item_header, len(order.items))
         print_summary(order, args.output)
+        print(
+            f"Part description mappings: "
+            f"{len(order.items)}/{len(order.items)} matched"
+        )
         return 0
     except (ConversionError, OSError, csv.Error) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

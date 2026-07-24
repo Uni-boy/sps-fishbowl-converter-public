@@ -14,6 +14,7 @@ from convert_sps_po_to_fishbowl_so import (
     build_output_rows,
     decimal_text,
     infer_date_format,
+    load_part_descriptions,
     load_template,
     parse_sps_order,
     validate_output_rows,
@@ -23,8 +24,12 @@ from convert_sps_po_to_fishbowl_so import (
 
 APP_DIR = Path(__file__).resolve().parent
 TEMPLATE_PATH = APP_DIR / "SalesOrder_template.csv"
-def convert_upload(uploaded_bytes: bytes) -> tuple[bytes, object]:
-    """Convert an uploaded SPS PO entirely in a temporary directory."""
+
+
+def convert_upload(
+    uploaded_bytes: bytes, part_bytes: bytes
+) -> tuple[bytes, object]:
+    """Convert uploaded SPS PO and Part CSV files in a temporary directory."""
     so_header, item_header = load_template(TEMPLATE_PATH)
     output_date_format = infer_date_format([], so_header)
     private_defaults = {}
@@ -37,10 +42,13 @@ def convert_upload(uploaded_bytes: bytes) -> tuple[bytes, object]:
     with tempfile.TemporaryDirectory(prefix="sps-fishbowl-") as temp_dir:
         temp_path = Path(temp_dir)
         po_path = temp_path / "uploaded_po.csv"
+        parts_path = temp_path / "uploaded_parts.csv"
         output_path = temp_path / "converted_sales_order.csv"
         po_path.write_bytes(uploaded_bytes)
+        parts_path.write_bytes(part_bytes)
 
         order = parse_sps_order(po_path, output_date_format)
+        part_descriptions = load_part_descriptions(parts_path)
         rows = build_output_rows(
             order,
             so_header,
@@ -48,6 +56,7 @@ def convert_upload(uploaded_bytes: bytes) -> tuple[bytes, object]:
             {},
             {},
             extra_so_defaults=private_defaults,
+            part_descriptions=part_descriptions,
         )
         validate_output_rows(rows, so_header, item_header, len(order.items))
         write_csv(output_path, rows)
@@ -79,16 +88,26 @@ with st.form("converter"):
         type=["csv"],
         help="Upload one SPS purchase order at a time.",
     )
+    part_file = st.file_uploader(
+        "Fishbowl Part.csv",
+        type=["csv"],
+        help=(
+            "Used to map each ProductNumber to its current Fishbowl "
+            "PartDescription."
+        ),
+    )
     submitted = st.form_submit_button(
         "Convert and validate", type="primary", use_container_width=True
     )
 
 if submitted:
-    if uploaded_file is None:
-        st.warning("Please select an SPS Commerce PO CSV.")
+    if uploaded_file is None or part_file is None:
+        st.warning("Please select both the SPS PO CSV and Fishbowl Part.csv.")
     else:
         try:
-            output_bytes, order = convert_upload(uploaded_file.getvalue())
+            output_bytes, order = convert_upload(
+                uploaded_file.getvalue(), part_file.getvalue()
+            )
             quantity_total = sum(
                 (item.quantity for item in order.items), Decimal("0")
             )
@@ -101,6 +120,10 @@ if submitted:
             col1.metric("Item rows", len(order.items))
             col2.metric("Total quantity", decimal_text(quantity_total))
             col3.metric("Order total", f"${calculated_total:,.2f}")
+            st.caption(
+                f"Part description mapping: {len(order.items)}/"
+                f"{len(order.items)} matched"
+            )
 
             st.subheader("Order summary")
             st.write(f"**PO Number:** {order.po_number}")

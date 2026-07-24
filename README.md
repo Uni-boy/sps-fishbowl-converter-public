@@ -6,12 +6,12 @@ into a Fishbowl Sales Order import CSV.
 ## What the manager does
 
 1. Open the Streamlit application.
-2. Upload one SPS Commerce PO CSV.
+2. Upload one SPS Commerce PO CSV and the current Fishbowl `Part.csv`.
 3. Review the item count, quantity, dates, address, and amount.
 4. Download the validated Fishbowl CSV.
 
-The Fishbowl template is bundled with the application. Users only upload the
-SPS PO.
+The Fishbowl template is bundled with the application. `Part.csv` remains
+private and is uploaded at conversion time; it is never committed to GitHub.
 
 ## Run locally
 
@@ -60,6 +60,9 @@ LocationGroupName = "your location group"
 - `convert_sps_po_to_fishbowl_so.py` — conversion and validation logic
 - `SalesOrder_template.csv` — Fishbowl column definition
 - `requirements.txt` — Streamlit dependency
+
+Every SPS ProductNumber must exist exactly once in `Part.csv` and have a
+non-empty `PartDescription`. Conversion stops on missing or duplicate mappings.
 
 The generated Fishbowl file contains no header rows and uses UTF-8 without a
 BOM. It begins with one `SO` row followed by the order's `Item` rows.
