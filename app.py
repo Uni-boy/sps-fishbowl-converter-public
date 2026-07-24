@@ -8,6 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import streamlit as st
+from cryptography.fernet import Fernet, InvalidToken
 
 from convert_sps_po_to_fishbowl_so import (
     ConversionError,
@@ -24,12 +25,31 @@ from convert_sps_po_to_fishbowl_so import (
 
 APP_DIR = Path(__file__).resolve().parent
 TEMPLATE_PATH = APP_DIR / "SalesOrder_template.csv"
+ENCRYPTED_PARTS_PATH = APP_DIR / "data" / "parts.csv.fernet"
 
 
-def convert_upload(
-    uploaded_bytes: bytes, part_bytes: bytes
-) -> tuple[bytes, object]:
-    """Convert uploaded SPS PO and Part CSV files in a temporary directory."""
+def decrypt_part_catalog(destination: Path) -> None:
+    """Decrypt the bundled Part catalog using a Streamlit Secret."""
+    if "PARTS_ENCRYPTION_KEY" not in st.secrets:
+        raise ConversionError(
+            "The server is missing PARTS_ENCRYPTION_KEY in Streamlit Secrets."
+        )
+    if not ENCRYPTED_PARTS_PATH.is_file():
+        raise ConversionError("The encrypted Part catalog is not deployed.")
+
+    try:
+        key = str(st.secrets["PARTS_ENCRYPTION_KEY"]).encode("ascii")
+        decrypted = Fernet(key).decrypt(ENCRYPTED_PARTS_PATH.read_bytes())
+    except (ValueError, InvalidToken, UnicodeEncodeError) as exc:
+        raise ConversionError(
+            "The encrypted Part catalog or its server key is invalid."
+        ) from exc
+
+    destination.write_bytes(decrypted)
+
+
+def convert_upload(uploaded_bytes: bytes) -> tuple[bytes, object]:
+    """Convert one uploaded SPS PO using the encrypted server catalog."""
     so_header, item_header = load_template(TEMPLATE_PATH)
     output_date_format = infer_date_format([], so_header)
     private_defaults = {}
@@ -42,10 +62,10 @@ def convert_upload(
     with tempfile.TemporaryDirectory(prefix="sps-fishbowl-") as temp_dir:
         temp_path = Path(temp_dir)
         po_path = temp_path / "uploaded_po.csv"
-        parts_path = temp_path / "uploaded_parts.csv"
+        parts_path = temp_path / "decrypted_parts.csv"
         output_path = temp_path / "converted_sales_order.csv"
         po_path.write_bytes(uploaded_bytes)
-        parts_path.write_bytes(part_bytes)
+        decrypt_part_catalog(parts_path)
 
         order = parse_sps_order(po_path, output_date_format)
         part_descriptions = load_part_descriptions(parts_path)
@@ -88,26 +108,16 @@ with st.form("converter"):
         type=["csv"],
         help="Upload one SPS purchase order at a time.",
     )
-    part_file = st.file_uploader(
-        "Fishbowl Part.csv",
-        type=["csv"],
-        help=(
-            "Used to map each ProductNumber to its current Fishbowl "
-            "PartDescription."
-        ),
-    )
     submitted = st.form_submit_button(
         "Convert and validate", type="primary", use_container_width=True
     )
 
 if submitted:
-    if uploaded_file is None or part_file is None:
-        st.warning("Please select both the SPS PO CSV and Fishbowl Part.csv.")
+    if uploaded_file is None:
+        st.warning("Please select an SPS PO CSV.")
     else:
         try:
-            output_bytes, order = convert_upload(
-                uploaded_file.getvalue(), part_file.getvalue()
-            )
+            output_bytes, order = convert_upload(uploaded_file.getvalue())
             quantity_total = sum(
                 (item.quantity for item in order.items), Decimal("0")
             )

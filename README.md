@@ -6,12 +6,13 @@ into a Fishbowl Sales Order import CSV.
 ## What the manager does
 
 1. Open the Streamlit application.
-2. Upload one SPS Commerce PO CSV and the current Fishbowl `Part.csv`.
+2. Upload one SPS Commerce PO CSV.
 3. Review the item count, quantity, dates, address, and amount.
 4. Download the validated Fishbowl CSV.
 
-The Fishbowl template is bundled with the application. `Part.csv` remains
-private and is uploaded at conversion time; it is never committed to GitHub.
+The Fishbowl template and an encrypted Part description catalog are bundled
+with the application. The decryption key is stored only in Streamlit Secrets.
+The original `Part.csv` is never committed to GitHub.
 
 ## Run locally
 
@@ -34,6 +35,8 @@ Configure private business defaults through Streamlit Secrets instead of
 committing customer information to GitHub:
 
 ```toml
+PARTS_ENCRYPTION_KEY = "private Fernet key"
+
 [fishbowl_defaults]
 CustomerName = "your customer name"
 CustomerContact = "your customer contact"
@@ -58,11 +61,26 @@ LocationGroupName = "your location group"
 
 - `app.py` — browser interface
 - `convert_sps_po_to_fishbowl_so.py` — conversion and validation logic
+- `encrypt_parts.py` — refreshes the encrypted Part description catalog
 - `SalesOrder_template.csv` — Fishbowl column definition
+- `data/parts.csv.fernet` — encrypted PartNumber/description catalog
 - `requirements.txt` — Streamlit dependency
 
-Every SPS ProductNumber must exist exactly once in `Part.csv` and have a
-non-empty `PartDescription`. Conversion stops on missing or duplicate mappings.
+Every SPS ProductNumber must exist exactly once in the encrypted catalog and
+have a non-empty `PartDescription`. Conversion stops on missing or duplicate
+mappings.
+
+## Refresh the Part catalog
+
+Replace the local ignored `Part.csv`, keep the existing encryption key in
+`.streamlit/secrets.toml`, and run:
+
+```bash
+python3 encrypt_parts.py
+```
+
+Commit only the regenerated `data/parts.csv.fernet`. Do not commit `Part.csv`
+or `.streamlit/secrets.toml`.
 
 The generated Fishbowl file contains no header rows and uses UTF-8 without a
 BOM. It begins with one `SO` row followed by the order's `Item` rows.
