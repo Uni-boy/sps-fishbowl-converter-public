@@ -1,0 +1,73 @@
+name: Update Fishbowl Part catalog
+
+on:
+  schedule:
+    # GitHub cron is UTC. Run at both possible UTC equivalents of 8 AM
+    # America/New_York; the timezone gate below permits exactly one run.
+    - cron: "0 12 * * *"
+    - cron: "0 13 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-fishbowl-parts
+  cancel-in-progress: false
+
+jobs:
+  update-parts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check New York schedule
+        id: schedule
+        shell: bash
+        run: |
+          eastern_offset="$(TZ=America/New_York date +%z)"
+          scheduled_cron="${{ github.event.schedule }}"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || \
+             [[ "$scheduled_cron" == "0 12 * * *" && "$eastern_offset" == "-0400" ]] || \
+             [[ "$scheduled_cron" == "0 13 * * *" && "$eastern_offset" == "-0500" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out repository
+        if: steps.schedule.outputs.run == 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: steps.schedule.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        if: steps.schedule.outputs.run == 'true'
+        run: python -m pip install -r requirements.txt
+
+      - name: Refresh encrypted Part catalog
+        if: steps.schedule.outputs.run == 'true'
+        env:
+          FISHBOWL_BASE_URL: "http://xmyautoparts.myfishbowl.com:3404"
+          FISHBOWL_USERNAME: ${{ secrets.FISHBOWL_USERNAME }}
+          FISHBOWL_PASSWORD: ${{ secrets.FISHBOWL_PASSWORD }}
+          PARTS_ENCRYPTION_KEY: ${{ secrets.PARTS_ENCRYPTION_KEY }}
+        run: python sync_parts_from_fishbowl.py
+
+      - name: Commit catalog changes
+        if: steps.schedule.outputs.run == 'true'
+        shell: bash
+        run: |
+          if git diff --quiet -- data/parts.csv.fernet; then
+            echo "Fishbowl Part catalog is already current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/parts.csv.fernet
+          git commit -m "Update Fishbowl Part catalog"
+          git push

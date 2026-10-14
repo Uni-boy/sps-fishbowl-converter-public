@@ -62,6 +62,9 @@ LocationGroupName = "your location group"
 - `app.py` — browser interface
 - `convert_sps_po_to_fishbowl_so.py` — conversion and validation logic
 - `encrypt_parts.py` — refreshes the encrypted Part description catalog
+- `sync_parts_from_fishbowl.py` — reads and validates parts from the Fishbowl
+  read-only API, logs out, and refreshes the encrypted catalog only when data
+  changed
 - `SalesOrder_template.csv` — Fishbowl column definition
 - `data/parts.csv.fernet` — encrypted PartNumber/description catalog
 - `requirements.txt` — Streamlit dependency
@@ -81,6 +84,26 @@ python3 encrypt_parts.py
 
 Commit only the regenerated `data/parts.csv.fernet`. Do not commit `Part.csv`
 or `.streamlit/secrets.toml`.
+
+## Automatic Part catalog refresh
+
+The GitHub Actions workflow in `.github/workflows/update-parts.yml` checks
+Fishbowl every day at 8:00 AM America/New_York. It schedules both UTC offsets
+used by Eastern Time and applies a timezone gate, so daylight-saving changes do
+not shift the business time. A manual run is also available from the Actions
+tab.
+
+Create these repository Actions secrets before enabling the schedule:
+
+- `FISHBOWL_USERNAME`
+- `FISHBOWL_PASSWORD`
+- `PARTS_ENCRYPTION_KEY`
+
+The workflow uses the approved Fishbowl read-only app identity, reads the
+`part` table in stable pages, validates every PartNumber and description, and
+always attempts logout before ending. When the catalog changes, the workflow
+commits only `data/parts.csv.fernet`; otherwise it creates no commit. The
+credentials and decrypted CSV never enter the repository.
 
 The generated Fishbowl file contains no header rows and uses UTF-8 without a
 BOM. It begins with one `SO` row followed by the order's `Item` rows.
