@@ -191,6 +191,34 @@ def fetch_parts(
     return descriptions
 
 
+def fetch_catalog_from_fishbowl(
+    config: FishbowlConfig, page_size: int = DEFAULT_PAGE_SIZE
+) -> dict[str, str]:
+    """Fetch and validate the catalog while always releasing the API session."""
+    session = requests.Session()
+    token: Optional[str] = None
+    headers: dict[str, str] = {}
+    primary_error: Optional[BaseException] = None
+    try:
+        token = login(session, config)
+        headers = {"Authorization": f"Bearer {token}"}
+        return fetch_parts(session, config, headers, page_size=page_size)
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        if token is not None:
+            try:
+                logout(session, config, headers)
+            except requests.RequestException as exc:
+                if primary_error is None:
+                    raise FishbowlSyncError(
+                        f"Fishbowl logout failed: {exc}"
+                    ) from exc
+                print(f"WARNING: Fishbowl logout failed: {exc}", file=sys.stderr)
+        session.close()
+
+
 def read_encrypted_catalog(
     path: Path, key: bytes
 ) -> Optional[dict[str, str]]:
@@ -277,30 +305,7 @@ def main() -> int:
         key = get_encryption_key(args.secrets_file)
         current = read_encrypted_catalog(args.output, key)
 
-        session = requests.Session()
-        token: Optional[str] = None
-        headers: dict[str, str] = {}
-        primary_error: Optional[BaseException] = None
-        try:
-            token = login(session, config)
-            headers = {"Authorization": f"Bearer {token}"}
-            parts = fetch_parts(
-                session, config, headers, page_size=args.page_size
-            )
-        except BaseException as exc:
-            primary_error = exc
-            raise
-        finally:
-            if token is not None:
-                try:
-                    logout(session, config, headers)
-                except requests.RequestException as exc:
-                    if primary_error is None:
-                        raise FishbowlSyncError(
-                            f"Fishbowl logout failed: {exc}"
-                        ) from exc
-                    print(f"WARNING: Fishbowl logout failed: {exc}", file=sys.stderr)
-            session.close()
+        parts = fetch_catalog_from_fishbowl(config, page_size=args.page_size)
 
         added, removed, changed = summarize_changes(current, parts)
         print(f"Fishbowl parts: {len(parts)}")

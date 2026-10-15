@@ -6,9 +6,11 @@ import csv
 import tempfile
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import streamlit as st
 from cryptography.fernet import Fernet, InvalidToken
+from requests import RequestException
 
 from convert_sps_po_to_fishbowl_so import (
     ConversionError,
@@ -21,31 +23,113 @@ from convert_sps_po_to_fishbowl_so import (
     validate_output_rows,
     write_csv,
 )
+from sync_parts_from_fishbowl import (
+    DEFAULT_APP_DESCRIPTION,
+    DEFAULT_APP_ID,
+    DEFAULT_APP_NAME,
+    DEFAULT_BASE_URL,
+    FishbowlConfig,
+    FishbowlSyncError,
+    encrypt_catalog,
+    fetch_catalog_from_fishbowl,
+    read_encrypted_catalog,
+    summarize_changes,
+)
 
 
 APP_DIR = Path(__file__).resolve().parent
 TEMPLATE_PATH = APP_DIR / "SalesOrder_template.csv"
 ENCRYPTED_PARTS_PATH = APP_DIR / "data" / "parts.csv.fernet"
+RUNTIME_ENCRYPTED_PARTS_PATH = (
+    Path(tempfile.gettempdir()) / "sps-fishbowl-runtime-parts.csv.fernet"
+)
 
 
-def decrypt_part_catalog(destination: Path) -> None:
-    """Decrypt the bundled Part catalog using a Streamlit Secret."""
+def part_encryption_key() -> bytes:
     if "PARTS_ENCRYPTION_KEY" not in st.secrets:
         raise ConversionError(
             "The server is missing PARTS_ENCRYPTION_KEY in Streamlit Secrets."
         )
-    if not ENCRYPTED_PARTS_PATH.is_file():
+    try:
+        return str(st.secrets["PARTS_ENCRYPTION_KEY"]).encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ConversionError("The Part catalog encryption key is invalid.") from exc
+
+
+def active_encrypted_parts_path() -> Path:
+    if RUNTIME_ENCRYPTED_PARTS_PATH.is_file():
+        return RUNTIME_ENCRYPTED_PARTS_PATH
+    return ENCRYPTED_PARTS_PATH
+
+
+def decrypt_part_catalog(destination: Path) -> None:
+    """Decrypt the bundled Part catalog using a Streamlit Secret."""
+    encrypted_path = active_encrypted_parts_path()
+    if not encrypted_path.is_file():
         raise ConversionError("The encrypted Part catalog is not deployed.")
 
     try:
-        key = str(st.secrets["PARTS_ENCRYPTION_KEY"]).encode("ascii")
-        decrypted = Fernet(key).decrypt(ENCRYPTED_PARTS_PATH.read_bytes())
+        decrypted = Fernet(part_encryption_key()).decrypt(
+            encrypted_path.read_bytes()
+        )
     except (ValueError, InvalidToken, UnicodeEncodeError) as exc:
         raise ConversionError(
             "The encrypted Part catalog or its server key is invalid."
         ) from exc
 
     destination.write_bytes(decrypted)
+
+
+def require_streamlit_secret(name: str) -> str:
+    if name not in st.secrets or not str(st.secrets[name]).strip():
+        raise FishbowlSyncError(
+            f"The server is missing {name} in Streamlit Secrets."
+        )
+    return str(st.secrets[name]).strip()
+
+
+def fishbowl_config_from_secrets() -> FishbowlConfig:
+    base_url = str(st.secrets.get("FISHBOWL_BASE_URL", DEFAULT_BASE_URL)).rstrip(
+        "/"
+    )
+    return FishbowlConfig(
+        base_url=base_url,
+        username=require_streamlit_secret("FISHBOWL_USERNAME"),
+        password=require_streamlit_secret("FISHBOWL_PASSWORD"),
+        app_name=DEFAULT_APP_NAME,
+        app_description=DEFAULT_APP_DESCRIPTION,
+        app_id=DEFAULT_APP_ID,
+    )
+
+
+def update_runtime_part_catalog() -> dict[str, Any]:
+    """Synchronize Fishbowl parts into the running app's encrypted catalog."""
+    key = part_encryption_key()
+    current = read_encrypted_catalog(active_encrypted_parts_path(), key)
+    parts = fetch_catalog_from_fishbowl(fishbowl_config_from_secrets())
+    added, removed, changed = summarize_changes(current, parts)
+
+    updated = current != parts
+    if updated:
+        candidate = RUNTIME_ENCRYPTED_PARTS_PATH.with_suffix(".tmp")
+        try:
+            encrypt_catalog(parts, candidate, key)
+            verified = read_encrypted_catalog(candidate, key)
+            if verified != parts:
+                raise FishbowlSyncError(
+                    "The refreshed encrypted Part catalog failed validation."
+                )
+            candidate.replace(RUNTIME_ENCRYPTED_PARTS_PATH)
+        finally:
+            candidate.unlink(missing_ok=True)
+
+    return {
+        "count": len(parts),
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+        "updated": updated,
+    }
 
 
 def convert_upload(uploaded_bytes: bytes) -> tuple[bytes, object]:
@@ -101,6 +185,41 @@ st.write(
     "Upload an SPS Commerce PO CSV. The app validates the order and creates a "
     "Fishbowl-ready Sales Order CSV."
 )
+
+st.subheader("Part catalog")
+st.caption(
+    "Update reads the current PartNumber and description list directly from "
+    "Fishbowl using the approved read-only connection."
+)
+if st.button(
+    "Update Part catalog",
+    type="secondary",
+    use_container_width=True,
+):
+    try:
+        with st.spinner("Reading and validating Fishbowl parts..."):
+            result = update_runtime_part_catalog()
+        if result["updated"]:
+            st.success(
+                "Part catalog updated. "
+                f"{result['count']:,} parts; "
+                f"{result['added']} added, "
+                f"{result['removed']} removed, "
+                f"{result['changed']} descriptions changed."
+            )
+        else:
+            st.success(
+                f"Part catalog is already current ({result['count']:,} parts)."
+            )
+    except (
+        ConversionError,
+        FishbowlSyncError,
+        OSError,
+        csv.Error,
+        RequestException,
+        ValueError,
+    ) as exc:
+        st.error(f"Part catalog update stopped: {exc}")
 
 with st.form("converter"):
     uploaded_file = st.file_uploader(

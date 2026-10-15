@@ -6,9 +6,10 @@ into a Fishbowl Sales Order import CSV.
 ## What the manager does
 
 1. Open the Streamlit application.
-2. Upload one SPS Commerce PO CSV.
-3. Review the item count, quantity, dates, address, and amount.
-4. Download the validated Fishbowl CSV.
+2. Use **Update Part catalog** when an immediate Fishbowl refresh is needed.
+3. Upload one SPS Commerce PO CSV.
+4. Review the item count, quantity, dates, address, and amount.
+5. Download the validated Fishbowl CSV.
 
 The Fishbowl template and an encrypted Part description catalog are bundled
 with the application. The decryption key is stored only in Streamlit Secrets.
@@ -104,6 +105,13 @@ The workflow uses the approved Fishbowl read-only app identity, reads the
 always attempts logout before ending. When the catalog changes, the workflow
 commits only `data/parts.csv.fernet`; otherwise it creates no commit. The
 credentials and decrypted CSV never enter the repository.
+
+The Streamlit **Update Part catalog** button uses the same read-only API and
+updates the running app immediately. Add `FISHBOWL_USERNAME` and
+`FISHBOWL_PASSWORD` to the app's Streamlit Secrets. The button always attempts
+Fishbowl logout, validates the full catalog, and keeps the runtime copy
+encrypted. Runtime updates are temporary if the Streamlit container restarts;
+the daily GitHub Actions job remains the permanent repository refresh.
 
 The generated Fishbowl file contains no header rows and uses UTF-8 without a
 BOM. It begins with one `SO` row followed by the order's `Item` rows.
