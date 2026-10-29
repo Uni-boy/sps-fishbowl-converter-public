@@ -114,4 +114,6 @@ encrypted. Runtime updates are temporary if the Streamlit container restarts;
 the daily GitHub Actions job remains the permanent repository refresh.
 
 The generated Fishbowl file contains no header rows and uses UTF-8 without a
-BOM. It begins with one `SO` row followed by the order's `Item` rows.
+BOM. It begins with one `SO` row followed by the order's `Item` rows sorted in
+ascending natural order by `ProductNumber`/SKU. Sorting changes only row order;
+the original SKU text, quantity, price, and other item values are preserved.

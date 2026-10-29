@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -337,6 +338,15 @@ def select_fields(header: Sequence[str], values: dict[str, str]) -> list[str]:
     return [values.get(column, "") for column in header]
 
 
+def sku_sort_key(value: str) -> tuple[tuple[int, object], ...]:
+    """Return a case-insensitive natural-sort key without changing the SKU."""
+    return tuple(
+        (0, int(part)) if part.isdigit() else (1, part.casefold())
+        for part in re.split(r"(\d+)", value)
+        if part
+    )
+
+
 def build_output_rows(
     order: SPSOrder,
     so_header: list[str],
@@ -367,7 +377,13 @@ def build_output_rows(
     # Fishbowl's importer uses the selected import template for field definitions.
     # The import CSV itself must start with an SO data row, not column-name rows.
     rows = [select_fields(so_header, so_values)]
-    for item in order.items:
+    # Keep the SO row first, then make the Fishbowl Item rows easy to review by
+    # sorting on the original ProductNumber/SKU. Python's sort is stable, so
+    # duplicate SKUs retain their SPS line order.
+    sorted_items = sorted(
+        order.items, key=lambda item: sku_sort_key(item.product_number)
+    )
+    for item in sorted_items:
         description = item.description
         if part_descriptions is not None:
             if item.product_number not in part_descriptions:
@@ -418,6 +434,10 @@ def validate_output_rows(
         row[item_header.index("SONum")] for row in item_rows
     ):
         raise ConversionError("SONum must be blank on every Item row")
+    product_number_index = item_header.index("ProductNumber")
+    product_numbers = [row[product_number_index] for row in item_rows]
+    if product_numbers != sorted(product_numbers, key=sku_sort_key):
+        raise ConversionError("Generated Item rows are not sorted by ProductNumber/SKU")
 
 
 def write_csv(path: Path, rows: Iterable[Sequence[str]]) -> None:
@@ -452,6 +472,7 @@ def print_summary(order: SPSOrder, output: Path) -> None:
     print("SO/Item row widths: PASS")
     print("Required item fields: PASS")
     print("Duplicate/missing item check: PASS")
+    print("Item SKU sort order: PASS")
     print("Output encoding: UTF-8 without BOM")
     print(f"Output: {output}")
     for warning in order.warnings:
